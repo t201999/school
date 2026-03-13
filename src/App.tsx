@@ -5,7 +5,6 @@ import {
   Loader2, 
   Calendar as CalendarIcon, 
   Settings2, 
-  FileText, 
   Upload, 
   Trash2, 
   ChevronRight,
@@ -28,13 +27,129 @@ import {
 import { saveAs } from 'file-saver';
 import { cn } from './utils';
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 
-// 設定 PDF.js 的 Worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+// 設定 PDF.js Worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 export default function App() {
   const [ocrText, setOcrText] = useState('');
   const [isParsing, setIsParsing] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
+  const [events, setEvents] = useState<any[]>([]);
+  const [startDate, setStartDate] = useState('2025-02-10');
+  const [totalWeeks, setTotalWeeks] = useState(20);
+  const [selectedWeekday, setSelectedWeekday] = useState(1); 
+  const [selectedGrade, setSelectedGrade] = useState('高一');
+  const [userApiKey, setUserApiKey] = useState(() => localStorage.getItem('gemini_api_key') || '');
+  const [manualEdits, setManualEdits] = useState<Record<number, { topic: string }>>({});
+  
+  // 使用 Ref 儲存圖片，避免使用 window 全域變數
+  const pendingImageRef = useRef<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploading(true);
+    try {
+      if (file.type === 'application/pdf') {
+        const arrayBuffer = await file.arrayBuffer();
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        let fullText = '';
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          const pageText = textContent.items.map((item: any) => (item as any).str).join(' ');
+          fullText += pageText + '\n';
+        }
+        setOcrText(fullText);
+      } else if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const base64 = event.target?.result as string;
+          setOcrText(`[已上傳圖片：${file.name}]\n(點擊「開始解析」AI 將自動辨識圖片內容)`);
+          pendingImageRef.current = base64;
+        };
+        reader.readAsDataURL(file);
+      }
+    } catch (error) {
+      console.error('File upload error:', error);
+      alert('檔案讀取失敗，請嘗試手動複製文字。');
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const parseCalendar = async () => {
+    if (!ocrText && !pendingImageRef.current) return;
+    
+    setIsParsing(true);
+    try {
+      const apiKey = userApiKey || "";
+      if (!apiKey) {
+        alert("請先在右上角設定您的 Gemini API Key");
+        setIsParsing(false);
+        return;
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      
+      let promptParts: any[] = [
+        { text: `你是一個台灣學校的教務處助手。請解析提供的行事曆內容，提取與「${selectedGrade}」相關的日程。
+        
+        請特別注意：
+        1. 國定假日、補假、彈性放假。
+        2. 定期考查（段考）、模擬考、補考日期。
+        3. 重要校園活動（校慶、運動會、畢業典禮）。
+
+        輸出格式必須是純 JSON，結構如下：
+        {
+          "events": [
+            {
+              "date": "YYYY-MM-DD",
+              "description": "活動名稱"
+            }
+          ]
+        }
+        內容如下：\n${ocrText}` }
+      ];
+
+      if (pendingImageRef.current) {
+        const base64Data = pendingImageRef.current.split(',')[1];
+        const mimeType = pendingImageRef.current.split(',')[0].split(':')[1].split(';')[0];
+        promptParts.push({
+          inlineData: { data: base64Data, mimeType: mimeType }
+        });
+      }
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [{ role: 'user', parts: promptParts }],
+        config: { responseMimeType: "application/json" }
+      });
+
+      const result = JSON.parse(response.text);
+      setEvents(result.events || []);
+      pendingImageRef.current = null;
+    } catch (error) {
+      console.error('Parsing error:', error);
+      alert("解析失敗。請確保 API Key 有效。");
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
+  // ... 其餘渲染邏輯保持不變 ...
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
+      {/* 這裡放您的 UI 程式碼 */}
+      <h1 className="text-2xl font-bold">教學時程產生器</h1>
+      {/* ... */}
+    </div>
+  );
+}  const [isParsing, setIsParsing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [events, setEvents] = useState<any[]>([]);
   const [startDate, setStartDate] = useState('2025-02-10');
